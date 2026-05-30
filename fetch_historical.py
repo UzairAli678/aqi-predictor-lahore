@@ -1,9 +1,12 @@
+
 import requests
 import pandas as pd
 import numpy as np
 import time
 from datetime import datetime, timedelta
 import os
+from dotenv import load_dotenv
+
 
 def fetch_openaq_data(api_key, city="Lahore", country="PK", parameters=None, days=365):
     if parameters is None:
@@ -171,11 +174,16 @@ def calculate_aqi_pm25(pm25):
     return np.nan
 
 def main():
-    # API keys
-    OPENAQ_KEY = "86f68a20a988a3a14537bf5d3a37f0f3bffd818442896003d28b98dd8e565b9c"
-    OPENWEATHER_KEY = "eeee98c7401e1f201da1f7694cc0bd98"
+    # Load API keys from .env
+    load_dotenv()
+    import os
+    OPENAQ_KEY = os.getenv("OPENAQ_KEY")
+    OPENWEATHER_KEY = os.getenv("OPENWEATHER_KEY")
     LAT, LON = 31.5497, 74.3436
     DAYS = 365
+    if not OPENAQ_KEY or not OPENWEATHER_KEY:
+        print("Error: Please set OPENAQ_KEY and OPENWEATHER_KEY in your .env file.")
+        return
     print("Fetching OpenAQ data...")
     openaq_df = fetch_openaq_data(OPENAQ_KEY, days=DAYS)
     print(f"OpenAQ rows: {len(openaq_df)}")
