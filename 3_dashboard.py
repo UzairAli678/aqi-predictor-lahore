@@ -6,6 +6,7 @@ import joblib
 import plotly.express as px
 import shap
 from datetime import datetime, timedelta
+import requests
 
 # === CONFIG ===
 DATA_DIR = 'data'
@@ -59,12 +60,56 @@ st.title("🌍 Lahore AQI Predictor")
 st.markdown("#### Real-time Air Quality Monitoring & 3-Day Forecast")
 st.markdown("---")
 
-# === CURRENT AQI SECTION ===
+
+
+# === CURRENT AQI SECTION (LIVE from OpenWeather) ===
 st.subheader("Current AQI")
+def calculate_aqi_from_pm25(pm25):
+    if pm25 <= 12.0:
+        return round((50/12.0) * pm25)
+    elif pm25 <= 35.4:
+        return round(((100-51)/(35.4-12.1)) * (pm25-12.1) + 51)
+    elif pm25 <= 55.4:
+        return round(((150-101)/(55.4-35.5)) * (pm25-35.5) + 101)
+    elif pm25 <= 150.4:
+        return round(((200-151)/(150.4-55.5)) * (pm25-55.5) + 151)
+    elif pm25 <= 250.4:
+        return round(((300-201)/(250.4-150.5)) * (pm25-150.5) + 201)
+    else:
+        return round(((500-301)/(500.4-250.5)) * (pm25-250.5) + 301)
+
+
+ow_api_key = "eeee98c7401e1f201da1f7694cc0bd98"
+ow_url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat=31.5497&lon=74.3436&appid={ow_api_key}"
+api_success = False
+api_debug_info = ""
 try:
-    current_df = pd.read_csv(CURRENT_CSV)
-    current = current_df.iloc[-1]
-    aqi = int(current['aqi'])
+    response = requests.get(ow_url, timeout=10)
+    api_debug_info += f"Status code: {response.status_code}\n"
+    if response.status_code == 200:
+        data = response.json()
+        api_debug_info += f"API response: {data}\n"
+        if "list" in data and len(data["list"]) > 0:
+            comp = data["list"][0]["components"]
+            pm25 = comp.get("pm2_5", 0)
+            pm10 = comp.get("pm10", 0)
+            no2 = comp.get("no2", 0)
+            so2 = comp.get("so2", 0)
+            o3 = comp.get("o3", 0)
+            co = comp.get("co", 0)
+            aqi = calculate_aqi_from_pm25(pm25)
+            api_success = True
+        else:
+            api_debug_info += "API response missing 'list' or empty.\n"
+    else:
+        api_debug_info += f"Non-200 status code.\n"
+except Exception as e:
+    api_debug_info += f"Exception: {e}\n"
+    api_success = False
+
+if api_success:
+    st.info("ℹ️ Showing LIVE AQI from OpenWeather API.")
+    # AQI color/status logic
     aqi_status = 'Unknown'
     aqi_color = '#808080'
     if aqi <= 50:
@@ -78,27 +123,61 @@ try:
     else:
         aqi_status, aqi_color = 'Very Unhealthy / Hazardous', '#8e24aa'
     st.markdown(f"""
-        <div style='background:{aqi_color};padding:2rem 1rem;border-radius:1rem;text-align:center;'>
-            <span style='font-size:3rem;font-weight:bold;color:white;'>{aqi}</span><br>
+        <div style='background:{aqi_color};padding:2rem 1rem;border-radius:1rem;text-align:center;position:relative;'>
+            <span style='font-size:3rem;font-weight:bold;color:white;'>{aqi}</span>
+            <span style='font-size:1.2rem;color:white;background:#e53935;padding:0.2rem 0.7rem;border-radius:0.7rem;margin-left:1rem;vertical-align:middle;'>🔴 LIVE</span><br>
             <span style='font-size:1.5rem;color:white;'>{aqi_status}</span>
         </div>
     """, unsafe_allow_html=True)
     if aqi > 150:
         st.error(f"⚠️ ALERT: AQI is {aqi} ({aqi_status})! Unhealthy air quality.")
-except Exception as e:
-    st.warning(f"Could not load current AQI data. ({e})")
-
-# === CURRENT POLLUTANTS SECTION ===
-st.subheader("Current Pollutants")
-try:
-    pollutant_cols = ['pm25', 'pm10', 'no2', 'so2', 'o3', 'co']
+    # Pollutants
+    st.subheader("Current Pollutants")
+    pollutant_vals = [pm25, pm10, no2, so2, o3, co]
     pollutant_labels = ['PM2.5', 'PM10', 'NO₂', 'SO₂', 'O₃', 'CO']
-    pollutant_vals = [current.get(col, np.nan) for col in pollutant_cols]
-    cols = st.columns(len(pollutant_cols))
+    cols = st.columns(len(pollutant_labels))
     for i, (col, label, val) in enumerate(zip(cols, pollutant_labels, pollutant_vals)):
-        col.metric(label, f"{val:.2f}" if pd.notnull(val) else "N/A")
-except Exception as e:
-    st.warning(f"Could not load pollutant data. ({e})")
+        col.metric(label, f"{val:.2f}")
+else:
+    st.warning("⚠️ LIVE AQI fetch failed. Showing fallback from CSV. See debug info below.")
+    with st.expander("Show API Debug Info"):
+        st.code(api_debug_info)
+    # Fallback to CSV
+    try:
+        current_df = pd.read_csv(CURRENT_CSV)
+        current = current_df.iloc[-1]
+        aqi = int(current['aqi'])
+        aqi_status = 'Unknown'
+        aqi_color = '#808080'
+        if aqi <= 50:
+            aqi_status, aqi_color = 'Good', '#43a047'
+        elif aqi <= 100:
+            aqi_status, aqi_color = 'Moderate', '#fbc02d'
+        elif aqi <= 150:
+            aqi_status, aqi_color = 'Unhealthy for Sensitive Groups', '#fb8c00'
+        elif aqi <= 200:
+            aqi_status, aqi_color = 'Unhealthy', '#e53935'
+        else:
+            aqi_status, aqi_color = 'Very Unhealthy / Hazardous', '#8e24aa'
+        st.markdown(f"""
+            <div style='background:{aqi_color};padding:2rem 1rem;border-radius:1rem;text-align:center;'>
+                <span style='font-size:3rem;font-weight:bold;color:white;'>{aqi}</span><br>
+                <span style='font-size:1.5rem;color:white;'>{aqi_status}</span><br>
+                <span style='font-size:1rem;color:white;'>Last Updated: {current.get('timestamp', 'N/A')}</span>
+            </div>
+        """, unsafe_allow_html=True)
+        if aqi > 150:
+            st.error(f"⚠️ ALERT: AQI is {aqi} ({aqi_status})! Unhealthy air quality.")
+        # Pollutants
+        st.subheader("Current Pollutants")
+        pollutant_cols = ['pm25', 'pm10', 'no2', 'so2', 'o3', 'co']
+        pollutant_labels = ['PM2.5', 'PM10', 'NO₂', 'SO₂', 'O₃', 'CO']
+        pollutant_vals = [current.get(col, np.nan) for col in pollutant_cols]
+        cols = st.columns(len(pollutant_cols))
+        for i, (col, label, val) in enumerate(zip(cols, pollutant_labels, pollutant_vals)):
+            col.metric(label, f"{val:.2f}" if pd.notnull(val) else "N/A")
+    except Exception as e:
+        st.warning(f"Could not load current AQI data. ({e})")
 
 # === MODEL COMPARISON SECTION ===
 st.subheader("Model Comparison")

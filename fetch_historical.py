@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import numpy as np
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 from dotenv import load_dotenv
 
@@ -27,7 +27,7 @@ def fetch_openaq_data(api_key, city="Lahore", country="PK", parameters=None, day
         print(f"Error fetching OpenAQ locations: {e}")
         return pd.DataFrame()
     # Step 2: Fetch measurements for each location
-    end_date = datetime.utcnow()
+    end_date = datetime.now(timezone.utc)
     start_date = end_date - timedelta(days=days)
     all_rows = []
     for loc_id in location_ids:
@@ -78,8 +78,8 @@ def fetch_openaq_data(api_key, city="Lahore", country="PK", parameters=None, day
 
 def fetch_openweather_air(api_key, lat, lon, days=365):
     base_url = "http://api.openweathermap.org/data/2.5/air_pollution/history"
-    end_date = int(datetime.utcnow().timestamp())
-    start_date = int((datetime.utcnow() - timedelta(days=days)).timestamp())
+    end_date = int(datetime.now(timezone.utc).timestamp())
+    start_date = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
     params = {
         "lat": lat,
         "lon": lon,
@@ -116,43 +116,29 @@ def fetch_openweather_air(api_key, lat, lon, days=365):
         print(f"Error fetching OpenWeather air pollution: {e}")
         return pd.DataFrame()
 
-def fetch_openweather_weather(api_key, lat, lon, days=365):
-    base_url = "http://history.openweathermap.org/data/2.5/history/city"
-    end_date = int(datetime.utcnow().timestamp())
-    start_date = int((datetime.utcnow() - timedelta(days=days)).timestamp())
-    params = {
-        "lat": lat,
-        "lon": lon,
-        "type": "hour",
-        "start": start_date,
-        "end": end_date,
-        "appid": api_key
-    }
+
+# Fetch current weather for Lahore using free endpoint
+def fetch_current_weather(api_key, lat, lon):
+    url = f"http://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}"
     try:
-        resp = requests.get(base_url, params=params)
-        if resp.status_code == 429:
-            print("OpenWeather weather rate limit hit, sleeping 1s...")
-            time.sleep(1)
-            resp = requests.get(base_url, params=params)
+        resp = requests.get(url)
         resp.raise_for_status()
         data = resp.json()
-        rows = []
-        for item in data.get("list", []):
-            dt = datetime.utcfromtimestamp(item["dt"]).strftime('%Y-%m-%dT%H:%M:%SZ')
-            main = item.get("main", {})
-            wind = item.get("wind", {})
-            row = {
-                "timestamp": dt,
-                "temperature": main.get("temp"),
-                "humidity": main.get("humidity"),
-                "wind_speed": wind.get("speed"),
-            }
-            rows.append(row)
-        df = pd.DataFrame(rows)
-        return df
+        temperature = data["main"]["temp"] - 273.15
+        humidity = data["main"]["humidity"]
+        wind_speed = data["wind"]["speed"]
+        return {
+            "temperature": temperature,
+            "humidity": humidity,
+            "wind_speed": wind_speed
+        }
     except Exception as e:
-        print(f"Error fetching OpenWeather weather: {e}")
-        return pd.DataFrame()
+        print(f"Error fetching current weather: {e}")
+        return {
+            "temperature": np.nan,
+            "humidity": np.nan,
+            "wind_speed": np.nan
+        }
 
 def calculate_aqi_pm25(pm25):
     # US EPA breakpoints
@@ -190,39 +176,61 @@ def main():
     print("Fetching OpenWeather air pollution data...")
     ow_air_df = fetch_openweather_air(OPENWEATHER_KEY, LAT, LON, days=DAYS)
     print(f"OpenWeather air rows: {len(ow_air_df)}")
-    print("Fetching OpenWeather weather data...")
-    ow_weather_df = fetch_openweather_weather(OPENWEATHER_KEY, LAT, LON, days=DAYS)
-    print(f"OpenWeather weather rows: {len(ow_weather_df)}")
-    # Merge all data on timestamp
-    df = openaq_df.copy()
+
+    # Only use pollution data and add current weather to all rows
+    if openaq_df.empty and ow_air_df.empty:
+        print("No data fetched from any source. Exiting.")
+        return
+
+    # Start with the first non-empty DataFrame
+    if not openaq_df.empty:
+        df = openaq_df.copy()
+    elif not ow_air_df.empty:
+        df = ow_air_df.copy()
+    else:
+        print("No data to merge.")
+        return
+
     # Merge with OpenWeather air (fill missing pollutants)
-    if not ow_air_df.empty:
+    if not ow_air_df.empty and not df.empty and "timestamp" in df.columns and "timestamp" in ow_air_df.columns:
         df = pd.merge(df, ow_air_df, on="timestamp", how="outer", suffixes=("", "_ow"))
         for col in ["pm25", "pm10", "no2", "so2", "o3", "co"]:
             df[col] = df[col].combine_first(df.get(f"{col}_ow"))
             if f"{col}_ow" in df:
                 df.drop(columns=[f"{col}_ow"], inplace=True)
-    # Merge with OpenWeather weather
-    if not ow_weather_df.empty:
-        df = pd.merge(df, ow_weather_df, on="timestamp", how="left")
-    # Add time features
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df["hour"] = df["timestamp"].dt.hour
-    df["day"] = df["timestamp"].dt.day
-    df["month"] = df["timestamp"].dt.month
-    df["day_of_week"] = df["timestamp"].dt.dayofweek
+
+    # Add time features if timestamp exists
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["hour"] = df["timestamp"].dt.hour
+        df["day"] = df["timestamp"].dt.day
+        df["month"] = df["timestamp"].dt.month
+        df["day_of_week"] = df["timestamp"].dt.dayofweek
+
     # Calculate AQI if not present
-    if "aqi" not in df:
+    if "pm25" in df.columns and ("aqi" not in df.columns or df["aqi"].isna().all()):
         df["aqi"] = df["pm25"].apply(calculate_aqi_pm25)
+
+    # Fetch current weather and add to all rows
+    print("Fetching current weather for Lahore...")
+    weather = fetch_current_weather(OPENWEATHER_KEY, LAT, LON)
+    df["temperature"] = weather["temperature"]
+    df["humidity"] = weather["humidity"]
+    df["wind_speed"] = weather["wind_speed"]
+
     # Sort and drop duplicates
-    df = df.sort_values("timestamp").drop_duplicates("timestamp")
+    if "timestamp" in df.columns:
+        df = df.sort_values("timestamp").drop_duplicates("timestamp")
+
     # Save
     os.makedirs("data", exist_ok=True)
     df.to_csv("data/aqi_historical.csv", index=False)
+
     # Print summary
     if not df.empty:
-        print(f"Total rows fetched: {len(df)}")
-        print(f"Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+        if "timestamp" in df.columns:
+            print(f"Total rows fetched: {len(df)}")
+            print(f"Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
         print(f"Columns: {list(df.columns)}")
     else:
         print("No data to save.")
