@@ -11,11 +11,13 @@ permissions:
 jobs:
   fetch-data:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v4
@@ -25,17 +27,19 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Set up .env file
+        run: |
+          echo "AQICN_API_KEY=${{ secrets.AQICN_API_KEY }}" > .env
+          echo "CITY=lahore" >> .env
+
       - name: Run fetch data script
-        env:
-          AQICN_API_KEY: ${{ secrets.AQICN_API_KEY }}
-          CITY: lahore
         run: python 1_fetch_data.py
 
       - name: Commit and push new data
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git pull --rebase origin main
           git add data/
           git diff --staged --quiet || git commit -m "Auto fetch AQI data [GitHub Actions]"
-          git pull --rebase https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/UzairAli678/aqi-predictor-lahore.git main
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/UzairAli678/aqi-predictor-lahore.git main
+          git push origin main
