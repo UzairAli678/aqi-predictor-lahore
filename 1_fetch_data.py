@@ -1,115 +1,94 @@
+
+
+# AQI Fetcher for Lahore (Real Data Only)
 import os
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
+from datetime import datetime
 
 DATA_DIR = 'data'
 CURRENT_CSV = os.path.join(DATA_DIR, 'aqi_lahore.csv')
 HISTORICAL_CSV = os.path.join(DATA_DIR, 'aqi_historical.csv')
-
-FIELDS = [
-    'aqi', 'pm25', 'pm10', 'no2', 'so2', 'o3', 'co',
-    'temperature', 'humidity', 'wind_speed',
-    'timestamp', 'hour', 'day', 'month', 'day_of_week'
-]
+API_KEY = '81639ed2195e846449b2be120efc8292828c5f59'
+URL = f'https://api.waqi.info/feed/lahore/?token={API_KEY}'
 
 def ensure_data_dir():
     if not os.path.exists(DATA_DIR):
         os.makedirs(DATA_DIR)
 
-def load_env():
-    load_dotenv()
-    api_key = os.getenv('AQICN_API_KEY')
-    city = os.getenv('CITY', 'lahore')
-    if not api_key:
-        raise ValueError('AQICN_API_KEY not found in .env file')
-    return api_key, city
-
-def fetch_aqi(api_key, city, date=None):
-    if date:
-        url = f'https://api.waqi.info/feed/@{city}/?token={api_key}&date={date}'
-    else:
-        url = f'https://api.waqi.info/feed/{city}/?token={api_key}'
+def fetch_aqi():
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(URL, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         if data.get('status') != 'ok':
-            raise ValueError(f"API error: {data.get('data', data)}")
+            print(f"API error: {data.get('data', data)}")
+            return None
         return data['data']
     except Exception as e:
-        print(f"Error fetching AQI data: {e}")
+        print(f"Error fetching AQI: {e}")
         return None
 
 def extract_fields(data):
     iaqi = data.get('iaqi', {})
-    main = {
+    now = datetime.now()
+    row = {
         'aqi': data.get('aqi'),
-        'pm25': iaqi.get('pm25', {}).get('v'),
-        'pm10': iaqi.get('pm10', {}).get('v'),
-        'no2': iaqi.get('no2', {}).get('v'),
-        'so2': iaqi.get('so2', {}).get('v'),
-        'o3': iaqi.get('o3', {}).get('v'),
-        'co': iaqi.get('co', {}).get('v'),
-        'temperature': iaqi.get('t', {}).get('v'),
-        'humidity': iaqi.get('h', {}).get('v'),
-        'wind_speed': iaqi.get('w', {}).get('v'),
+        'pm25': iaqi.get('pm25', {}).get('v', None),
+        'pm10': iaqi.get('pm10', {}).get('v', None),
+        'no2': iaqi.get('no2', {}).get('v', None),
+        'so2': iaqi.get('so2', {}).get('v', None),
+        'o3': iaqi.get('o3', {}).get('v', None),
+        'co': iaqi.get('co', {}).get('v', None),
+        'temperature': iaqi.get('t', {}).get('v', None),
+        'humidity': iaqi.get('h', {}).get('v', None),
+        'wind_speed': iaqi.get('w', {}).get('v', None),
+        'timestamp': now.strftime('%Y-%m-%d %H:%M:%S'),
+        'hour': now.hour,
+        'day': now.day,
+        'month': now.month,
+        'day_of_week': now.weekday()
     }
-    # Time features
-    ts = data.get('time', {}).get('s')
-    if ts:
-        dt = pd.to_datetime(ts)
-    else:
-        dt = datetime.now()
-    main['timestamp'] = dt.strftime('%Y-%m-%d %H:%M:%S')
-    main['hour'] = dt.hour
-    main['day'] = dt.day
-    main['month'] = dt.month
-    main['day_of_week'] = dt.weekday()
-    return main
+    return row
 
-def save_to_csv(row, csv_path):
+def save_current(row):
     df = pd.DataFrame([row])
-    if os.path.exists(csv_path):
-        df.to_csv(csv_path, mode='a', header=False, index=False)
+    df.to_csv(CURRENT_CSV, mode='w', header=True, index=False)
+
+def save_historical(row):
+    df = pd.DataFrame([row])
+    if os.path.exists(HISTORICAL_CSV):
+        df.to_csv(HISTORICAL_CSV, mode='a', header=False, index=False)
     else:
-        df.to_csv(csv_path, mode='w', header=True, index=False)
+        df.to_csv(HISTORICAL_CSV, mode='w', header=True, index=False)
 
-def fetch_and_save_current(api_key, city):
-    data = fetch_aqi(api_key, city)
-    if data:
-        row = extract_fields(data)
-        save_to_csv(row, CURRENT_CSV)
-        print(f"Current AQI data saved to {CURRENT_CSV}")
-        return 1
-    return 0
-
-def fetch_and_save_historical(api_key, city, days=30):
-    count = 0
-    today = datetime.now()
-    for i in range(1, days+1):
-        date = (today - timedelta(days=i)).strftime('%Y-%m-%d')
-        data = fetch_aqi(api_key, city)
-        if data:
-            row = extract_fields(data)
-            row['timestamp'] = date + ' 12:00:00'  # Approximate midday
-            save_to_csv(row, HISTORICAL_CSV)
-            count += 1
-    print(f"Historical AQI data for {count} days saved to {HISTORICAL_CSV}")
-    return count
+def print_values(row):
+    print(f"✅ AQI: {row['aqi']}")
+    print(f"✅ PM2.5: {row['pm25']}")
+    print(f"✅ PM10: {row['pm10']}")
+    print(f"✅ NO2: {row['no2']}")
+    print(f"✅ SO2: {row['so2']}")
+    print(f"✅ O3: {row['o3']}")
+    print(f"✅ CO: {row['co']}")
+    print(f"✅ Temperature: {row['temperature']}")
+    print(f"✅ Humidity: {row['humidity']}")
+    print(f"✅ Wind Speed: {row['wind_speed']}")
+    print(f"✅ Timestamp: {row['timestamp']}")
+    print(f"✅ Hour: {row['hour']}")
+    print(f"✅ Day: {row['day']}")
+    print(f"✅ Month: {row['month']}")
+    print(f"✅ Day of Week: {row['day_of_week']}")
 
 def main():
     ensure_data_dir()
-    try:
-        api_key, city = load_env()
-        print(f"Fetching current AQI data for {city.title()}...")
-        n1 = fetch_and_save_current(api_key, city)
-        print(f"Fetching historical AQI data for past 30 days...")
-        n2 = fetch_and_save_historical(api_key, city, days=30)
-        print(f"Success! {n1} current and {n2} historical records saved.")
-    except Exception as e:
-        print(f"Error: {e}")
+    data = fetch_aqi()
+    if not data:
+        print("Failed to fetch AQI data from API.")
+        return
+    row = extract_fields(data)
+    save_current(row)
+    save_historical(row)
+    print_values(row)
 
 if __name__ == "__main__":
     main()
