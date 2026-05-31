@@ -1,4 +1,3 @@
-
 # === AQI Model Training Script ===
 import os
 import numpy as np
@@ -25,7 +24,7 @@ TARGET = 'aqi'
 
 MODELS = {
     'Random Forest': RandomForestRegressor(random_state=42, n_estimators=100),
-    'Ridge Regression': Ridge(random_state=42),
+    'Ridge Regression': Ridge(),
     'XGBoost': xgb.XGBRegressor(random_state=42, n_estimators=100, verbosity=0)
 }
 
@@ -58,20 +57,24 @@ def load_and_merge_data(synth_df):
         return synth_df
     try:
         df = pd.read_csv(DATA_PATH)
-        # Check if required columns exist and file is not empty
         if df.empty or not set(FEATURES + [TARGET]).issubset(df.columns):
             return synth_df
-        # Drop rows with missing values in required columns
         df = df.dropna(subset=FEATURES + [TARGET])
         merged = pd.concat([synth_df, df], ignore_index=True)
         return merged
     except Exception as e:
-        print(f"Warning: Could not load {DATA_PATH} ({e}). Using only synthetic data.")
+        print(f"Warning: Could not load {DATA_PATH} ({e}). Using synthetic data.")
         return synth_df
 
 def prepare_data(df):
-    X = df[FEATURES]
+    X = df[FEATURES].copy()
     y = df[TARGET]
+    # Fix column types for XGBoost
+    int_cols = ['hour', 'day', 'month', 'day_of_week']
+    for col in int_cols:
+        X[col] = pd.to_numeric(X[col], errors='coerce').fillna(0).astype(int)
+    # Fill any remaining NaN with column mean
+    X = X.fillna(X.mean())
     return X, y
 
 def split_data(X, y):
@@ -91,10 +94,12 @@ def main():
         df = load_and_merge_data(synth_df)
         X, y = prepare_data(df)
         X_train, X_test, y_train, y_test = split_data(X, y)
+
         results = []
         best_score = -np.inf
         best_model = None
         best_model_name = None
+
         print("=== Model Comparison ===")
         for name, model in MODELS.items():
             try:
@@ -113,24 +118,19 @@ def main():
                     best_model_name = name
             except Exception as e:
                 print(f"Error training {name}: {e}")
+
         if best_model is not None:
-            try:
-                joblib.dump(best_model, BEST_MODEL_PATH)
-                with open(BEST_MODEL_NAME_PATH, 'w') as f:
-                    f.write(best_model_name)
-                print(f"Best Model: {best_model_name} ✅ (saved to {BEST_MODEL_PATH})")
-            except Exception as e:
-                print(f"Error saving best model: {e}")
+            joblib.dump(best_model, BEST_MODEL_PATH)
+            with open(BEST_MODEL_NAME_PATH, 'w') as f:
+                f.write(best_model_name)
+            print(f"Best Model: {best_model_name} ✅ (saved to {BEST_MODEL_PATH})")
         else:
             print("No model was successfully trained.")
-        try:
-            comp_df = pd.DataFrame(results)
-            comp_df.to_csv(COMPARISON_CSV, index=False)
-            print(f"Model comparison saved to {COMPARISON_CSV}")
-        except Exception as e:
-            print(f"Error saving model comparison: {e}")
-    except ImportError as e:
-        print(f"ImportError: {e}. Please ensure all required packages are installed. Run: pip install -r requirements.txt")
+
+        comp_df = pd.DataFrame(results)
+        comp_df.to_csv(COMPARISON_CSV, index=False)
+        print(f"Model comparison saved to {COMPARISON_CSV}")
+
     except Exception as e:
         print(f"Error: {e}")
 
