@@ -236,25 +236,46 @@ try:
 except Exception as e:
     st.warning(f"Could not generate forecast. ({e})")
 
-# === FEATURE IMPORTANCE ANALYSIS SECTION ===
-st.subheader("Feature Importance Analysis")
+
+# === FEATURE IMPORTANCE ANALYSIS SECTION (SHAP) ===
+import pandas as pd
+import plotly.express as px
+
+st.subheader("🔍 SHAP Feature Importance Analysis")
 try:
-    model = joblib.load(BEST_MODEL_PATH)
-    if hasattr(model, "coef_"):
-        importances = pd.DataFrame({
-            'Feature': FEATURES,
-            'Importance': np.abs(model.coef_)
-        }).sort_values('Importance', ascending=False)
-        fig = px.bar(importances.head(10), x='Importance', y='Feature', orientation='h',
-                     title='Top 10 Feature Importances',
-                     color='Importance',
-                     color_continuous_scale=px.colors.sequential.OrRd)
-        st.plotly_chart(fig, width='stretch')
-        st.caption("Higher value means this feature has more influence on AQI prediction")
-    else:
-        st.warning("Feature importance is only available for Ridge Regression models.")
+    shap_df = pd.read_csv("data/shap_importance.csv")
+    shap_df = shap_df.rename(columns={shap_df.columns[0]: "feature", shap_df.columns[1]: "importance"})
+    shap_df = shap_df.sort_values("importance", ascending=False)
+
+    fig = px.bar(
+        shap_df,
+        x="importance",
+        y="feature",
+        orientation="h",
+        color="importance",
+        color_continuous_scale="OrRd",
+        title="🔍 SHAP Feature Importance Analysis"
+    )
+    fig.update_layout(
+        xaxis_title="SHAP Importance Value",
+        yaxis_title="Feature",
+        yaxis=dict(autorange="reversed"),
+        plot_bgcolor="white"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.write(
+        "SHAP (SHapley Additive exPlanations) shows how much each feature contributes to AQI predictions. "
+        "PM2.5 is the dominant factor in Lahore's AQI."
+    )
+
+    # Top 3 findings as info boxes
+    if len(shap_df) >= 3:
+        st.info(f"🥇 {shap_df.iloc[0]['feature']} is most important feature")
+        st.info(f"🥈 {shap_df.iloc[1]['feature']} is second most important")
+        st.info(f"🥉 {shap_df.iloc[2]['feature']} is third most important")
 except Exception as e:
-    st.warning(f"Could not compute feature importance. ({e})")
+    st.warning(f"Could not display SHAP feature importance. ({e})")
 
 # === HISTORICAL TREND SECTION ===
 st.subheader("Historical AQI Trend (30 Days)")
