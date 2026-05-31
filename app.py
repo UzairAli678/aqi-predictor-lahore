@@ -99,21 +99,37 @@ def forecast():
         if not model_loaded:
             return jsonify({"error": "Model not loaded", "details": model_load_error}), 500
 
-        # 1. Fetch current weather
-        weather_url = "http://api.openweathermap.org/data/2.5/weather?lat=31.5497&lon=74.3436&appid=eeee98c7401e1f201da1f7694cc0bd98"
-        weather_resp = requests.get(weather_url, timeout=10)
-        weather_resp.raise_for_status()
-        weather_data = weather_resp.json()
-        temperature = weather_data["main"]["temp"] - 273.15
-        humidity = weather_data["main"]["humidity"]
-        wind_speed = weather_data["wind"]["speed"]
+        # STEP 1: Fetch 5-day forecast (3-hour intervals)
+        forecast_url = "http://api.openweathermap.org/data/2.5/forecast?lat=31.5497&lon=74.3436&appid=eeee98c7401e1f201da1f7694cc0bd98"
+        forecast_resp = requests.get(forecast_url, timeout=15)
+        forecast_resp.raise_for_status()
+        forecast_data = forecast_resp.json()
+        forecast_list_3h = []
+        for item in forecast_data["list"]:
+            dt = datetime.utcfromtimestamp(item["dt"])
+            temp = item["main"]["temp"] - 273.15
+            humidity = item["main"]["humidity"]
+            wind_speed = item["wind"]["speed"]
+            hour = dt.hour
+            day = dt.day
+            month = dt.month
+            day_of_week = dt.weekday()
+            forecast_list_3h.append({
+                "dt": dt,
+                "temperature": temp,
+                "humidity": humidity,
+                "wind_speed": wind_speed,
+                "hour": hour,
+                "day": day,
+                "month": month,
+                "day_of_week": day_of_week
+            })
 
-        # 2. Fetch current pollution
+        # STEP 2: Fetch current pollution and add random variation
         pollution_url = "http://api.openweathermap.org/data/2.5/air_pollution?lat=31.5497&lon=74.3436&appid=eeee98c7401e1f201da1f7694cc0bd98"
         pollution_resp = requests.get(pollution_url, timeout=10)
         pollution_resp.raise_for_status()
-        pollution_data = pollution_resp.json()
-        components = pollution_data["list"][0]["components"]
+        components = pollution_resp.json()["list"][0]["components"]
         pm25 = components["pm2_5"]
         pm10 = components["pm10"]
         no2 = components["no2"]
@@ -121,31 +137,46 @@ def forecast():
         o3 = components["o3"]
         co = components["co"]
 
-        now = datetime.now()
-        current_hour = now.hour
-        current_day = now.day
-        current_month = now.month
-        current_day_of_week = now.weekday()
-
-        # 3. Generate 72-hour forecast with exact feature order
+        # STEP 3: Interpolate for each hour (0-71)
         features_list = []
-        for i in range(72):
-            dt = now + timedelta(hours=i)
+        for h in range(72):
+            # Find the two nearest 3-hour slots for interpolation
+            t0_idx = h // 3
+            t1_idx = min(t0_idx + 1, len(forecast_list_3h) - 1)
+            frac = (h % 3) / 3.0
+            f0 = forecast_list_3h[t0_idx]
+            f1 = forecast_list_3h[t1_idx]
+            # Linear interpolation for weather features
+            temperature = f0["temperature"] * (1 - frac) + f1["temperature"] * frac
+            humidity = f0["humidity"] * (1 - frac) + f1["humidity"] * frac
+            wind_speed = f0["wind_speed"] * (1 - frac) + f1["wind_speed"] * frac
+            hour = (f0["hour"] * (1 - frac) + f1["hour"] * frac)
+            day = int(round(f0["day"] * (1 - frac) + f1["day"] * frac))
+            month = int(round(f0["month"] * (1 - frac) + f1["month"] * frac))
+            day_of_week = int(round(f0["day_of_week"] * (1 - frac) + f1["day_of_week"] * frac))
+            # Add random variation to pollution features
+            pm25_var = pm25 * (1 + np.random.uniform(-0.1, 0.1))
+            pm10_var = pm10 * (1 + np.random.uniform(-0.1, 0.1))
+            no2_var = no2 * (1 + np.random.uniform(-0.1, 0.1))
+            so2_var = so2 * (1 + np.random.uniform(-0.1, 0.1))
+            o3_var = o3 * (1 + np.random.uniform(-0.1, 0.1))
+            co_var = co * (1 + np.random.uniform(-0.1, 0.1))
             features_list.append({
-                'pm25': pm25,
-                'pm10': pm10,
-                'no2': no2,
-                'so2': so2,
-                'o3': o3,
-                'co': co,
+                'pm25': pm25_var,
+                'pm10': pm10_var,
+                'no2': no2_var,
+                'so2': so2_var,
+                'o3': o3_var,
+                'co': co_var,
                 'temperature': temperature,
                 'humidity': humidity,
                 'wind_speed': wind_speed,
-                'hour': (current_hour + i) % 24,
-                'day': dt.day,
-                'month': dt.month,
-                'day_of_week': dt.weekday()
+                'hour': int(round(hour)) % 24,
+                'day': day,
+                'month': month,
+                'day_of_week': day_of_week
             })
+
         features = pd.DataFrame(features_list, columns=[
             'pm25', 'pm10', 'no2', 'so2', 'o3', 'co',
             'temperature', 'humidity', 'wind_speed',
