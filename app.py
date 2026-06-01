@@ -18,6 +18,13 @@ except Exception as e:
     model = None
     model_loaded = False
     model_load_error = str(e)
+else:
+    model_load_error = None
+
+# Print startup status for debugging
+print(f"Model loaded: {model_loaded}")
+if not model_loaded:
+    print(f"Model load error: {model_load_error}")
 
 # Helper: AQI calculation from pm2.5
 
@@ -96,9 +103,6 @@ def current_aqi():
 @app.route('/api/forecast', methods=['GET'])
 def forecast():
     try:
-        if not model_loaded:
-            return jsonify({"error": "Model not loaded", "details": model_load_error}), 500
-
         # STEP 1: Fetch 5-day forecast (3-hour intervals)
         forecast_url = "http://api.openweathermap.org/data/2.5/forecast?lat=31.5497&lon=74.3436&appid=eeee98c7401e1f201da1f7694cc0bd98"
         forecast_resp = requests.get(forecast_url, timeout=15)
@@ -182,8 +186,18 @@ def forecast():
             'temperature', 'humidity', 'wind_speed',
             'hour', 'day', 'month', 'day_of_week'])
 
-        preds = model.predict(features)
-        preds = [int(np.round(x)) for x in preds]
+        # Predict using loaded model if available, otherwise fallback to AQI-from-PM2.5
+        preds = None
+        if model_loaded and model is not None:
+            try:
+                preds = model.predict(features)
+                preds = [int(np.round(x)) for x in preds]
+            except Exception:
+                preds = None
+
+        if preds is None:
+            # Fallback: compute AQI directly from pm25 column
+            preds = [calculate_aqi(row['pm25']) for _, row in features.iterrows()]
         forecast_list = []
         for i, pred_aqi in enumerate(preds):
             status = get_status(pred_aqi)
@@ -222,7 +236,8 @@ def health():
     return jsonify({
         "status": "healthy" if model_loaded else "error",
         "model_loaded": model_loaded,
-        "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        "model_load_error": model_load_error if not model_loaded else None
     })
 
 if __name__ == '__main__':

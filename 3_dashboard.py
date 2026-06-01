@@ -171,50 +171,132 @@ st.subheader("3-Day AQI Forecast")
 try:
     api_url = "http://127.0.0.1:5000/api/forecast"
     forecast_data = None
+    api_ok = False
     try:
-        resp = requests.get(api_url, timeout=10)
+        resp = requests.get(api_url, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            forecast = data["forecast"]
-            times = [datetime.now() + timedelta(hours=i+1) for i in range(72)]
-            aqi_vals = [item["predicted_aqi"] for item in forecast]
-            forecast_data = pd.DataFrame({"Time": times, "Predicted AQI": aqi_vals})
-            for d in range(3):
-                day_val = forecast_data.iloc[d*24:(d+1)*24]["Predicted AQI"].mean()
-                st.info(f"Day {d+1} Predicted AQI: {day_val:.1f}")
-            fig = px.line(forecast_data, x="Time", y="Predicted AQI",
-                          title="72-Hour AQI Forecast",
-                          color_discrete_sequence=['#e53935'])
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            raise Exception("Flask API unavailable")
+            if "forecast" in data and len(data["forecast"]) > 0:
+                forecast = data["forecast"]
+                times = [datetime.now() + timedelta(hours=i+1) for i in range(len(forecast))]
+                aqi_vals = [item.get("predicted_aqi", np.nan) for item in forecast]
+                forecast_data = pd.DataFrame({"Time": times, "Predicted AQI": aqi_vals})
+                api_ok = True
     except Exception:
-        st.warning("Flask API unavailable, using OpenWeather fallback.")
-        ow_url = f"http://api.openweathermap.org/data/2.5/forecast?lat=31.5497&lon=74.3436&appid={ow_api_key}"
-        resp = requests.get(ow_url, timeout=15)
-        resp.raise_for_status()
-        ow_data = resp.json()
-        slots = []
-        for item in ow_data["list"]:
-            slots.append({
-                "temperature": item["main"]["temp"] - 273.15,
-                "humidity": item["main"]["humidity"],
-                "wind_speed": item["wind"]["speed"]
-            })
-        times = [datetime.now() + timedelta(hours=i+1) for i in range(72)]
-        aqi_vals = []
-        pm25_base = 75
-        for h in range(72):
-            pm25_var = pm25_base * (1 + np.random.uniform(-0.1, 0.1))
-            aqi_vals.append(calculate_aqi_from_pm25(pm25_var))
-        forecast_data = pd.DataFrame({"Time": times, "Predicted AQI": aqi_vals})
+        api_ok = False
+
+    if api_ok and forecast_data is not None:
+        st.success("Using local Flask API for forecast.")
         for d in range(3):
-            day_val = forecast_data.iloc[d*24:(d+1)*24]["Predicted AQI"].mean()
-            st.info(f"Day {d+1} Predicted AQI: {day_val:.1f}")
+            day_slice = forecast_data.iloc[d*24:(d+1)*24]
+            if len(day_slice) > 0:
+                day_val = day_slice["Predicted AQI"].mean()
+                st.info(f"Day {d+1} Predicted AQI: {day_val:.1f}")
         fig = px.line(forecast_data, x="Time", y="Predicted AQI",
                       title="72-Hour AQI Forecast",
                       color_discrete_sequence=['#e53935'])
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        # Fallback: use OpenWeather 5-day forecast + local model to create varied predictions
+        st.warning("Flask API unavailable, using OpenWeather fallback with local model.")
+        ow_url = f"http://api.openweathermap.org/data/2.5/forecast?lat=31.5497&lon=74.3436&appid={ow_api_key}"
+        resp = requests.get(ow_url, timeout=15)
+        resp.raise_for_status()
+        ow_data = resp.json()
+
+        # Build 3-hour slots from OpenWeather, then interpolate to hourly
+        slots = []
+        for item in ow_data.get("list", []):
+            dt = datetime.utcfromtimestamp(item["dt"])
+            slots.append({
+                "dt": dt,
+                "temperature": item["main"]["temp"] - 273.15,
+                "humidity": item["main"]["humidity"],
+                "wind_speed": item["wind"]["speed"],
+            })
+
+        # Get current pollution (single snapshot) and add small random variation per hour
+        air_url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat=31.5497&lon=74.3436&appid={ow_api_key}"
+        air_resp = requests.get(air_url, timeout=10)
+        air_resp.raise_for_status()
+        comp = air_resp.json().get("list", [])[0].get("components", {})
+        pm25 = comp.get("pm2_5", 75)
+        pm10 = comp.get("pm10", 120)
+        no2 = comp.get("no2", 15)
+        so2 = comp.get("so2", 8)
+        o3 = comp.get("o3", 25)
+        co = comp.get("co", 5)
+
+        # Interpolate each hour up to 72 hours
+        now = datetime.now()
+        features_list = []
+        for h in range(72):
+            # locate surrounding 3-hour slots
+            t0_idx = h // 3
+            t1_idx = min(t0_idx + 1, len(slots) - 1)
+            frac = (h % 3) / 3.0
+            if len(slots) == 0:
+                temp = 25.0
+                humidity = 50.0
+                wind_speed = 2.0
+            else:
+                f0 = slots[t0_idx]
+                f1 = slots[t1_idx]
+                temp = f0["temperature"] * (1 - frac) + f1["temperature"] * frac
+                humidity = f0["humidity"] * (1 - frac) + f1["humidity"] * frac
+                wind_speed = f0["wind_speed"] * (1 - frac) + f1["wind_speed"] * frac
+
+            pm25_var = pm25 * (1 + np.random.uniform(-0.1, 0.1))
+            pm10_var = pm10 * (1 + np.random.uniform(-0.1, 0.1))
+            no2_var = no2 * (1 + np.random.uniform(-0.1, 0.1))
+            so2_var = so2 * (1 + np.random.uniform(-0.1, 0.1))
+            o3_var = o3 * (1 + np.random.uniform(-0.1, 0.1))
+            co_var = co * (1 + np.random.uniform(-0.1, 0.1))
+
+            dt = now + timedelta(hours=h+1)
+            features_list.append({
+                'pm25': pm25_var,
+                'pm10': pm10_var,
+                'no2': no2_var,
+                'so2': so2_var,
+                'o3': o3_var,
+                'co': co_var,
+                'temperature': temp,
+                'humidity': humidity,
+                'wind_speed': wind_speed,
+                'hour': dt.hour,
+                'day': dt.day,
+                'month': dt.month,
+                'day_of_week': dt.weekday()
+            })
+
+        features = pd.DataFrame(features_list, columns=[
+            'pm25', 'pm10', 'no2', 'so2', 'o3', 'co',
+            'temperature', 'humidity', 'wind_speed',
+            'hour', 'day', 'month', 'day_of_week'])
+
+        # Load local model and predict
+        try:
+            model = joblib.load(BEST_MODEL_PATH)
+            preds = model.predict(features)
+            preds = [int(np.round(x)) for x in preds]
+        except Exception:
+            # Fallback simple AQI from pm25 if model load fails
+            preds = [calculate_aqi_from_pm25(row['pm25']) for _, row in features.iterrows()]
+
+        times = [now + timedelta(hours=i+1) for i in range(72)]
+        forecast_data = pd.DataFrame({"Time": times, "Predicted AQI": preds})
+        for d in range(3):
+            day_slice = forecast_data.iloc[d*24:(d+1)*24]
+            if len(day_slice) > 0:
+                day_val = day_slice["Predicted AQI"].mean()
+                st.info(f"Day {d+1} Predicted AQI: {day_val:.1f}")
+        fig = px.line(forecast_data, x="Time", y="Predicted AQI",
+                      title="72-Hour AQI Forecast",
+                      color_discrete_sequence=['#e53935'])
+        st.plotly_chart(fig, use_container_width=True)
+except Exception as e:
+    st.warning(f"Could not generate forecast. ({e})")
 except Exception as e:
     st.warning(f"Could not generate forecast. ({e})")
 
@@ -244,12 +326,8 @@ except Exception as e:
 st.subheader("Historical AQI Trend (30 Days)")
 try:
     hist_df = pd.read_csv(HIST_CSV)
-    # Fix mixed timestamp formats
-    hist_df['timestamp'] = pd.to_datetime(
-        hist_df['timestamp'],
-        format='mixed',
-        utc=True
-    )
+    # Parse timestamps robustly (support mixed formats)
+    hist_df['timestamp'] = pd.to_datetime(hist_df['timestamp'], utc=True, errors='coerce')
     hist_df = hist_df.sort_values('timestamp')
     hist_df = hist_df.dropna(subset=['aqi'])
     fig = px.line(hist_df, x='timestamp', y='aqi',
